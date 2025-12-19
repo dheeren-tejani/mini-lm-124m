@@ -1,0 +1,16 @@
+# Python evns
+venv/
+env/
+llm/
+
+# Node Modules
+frontend/node_modules
+
+# Model Folder
+backend/model
+
+# Envs
+.env
+
+# Python cache
+__pycache__

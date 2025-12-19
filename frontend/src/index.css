@@ -1,0 +1,423 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Animated border pulse for chat input when attachments are present */
+@keyframes borderGrow {
+  0% {
+    box-shadow: inset 0 0 0 0 rgba(99, 102, 241, 0.35);
+  }
+
+  50% {
+    box-shadow: inset 0 6px 0 0 rgba(99, 102, 241, 0.45);
+  }
+
+  100% {
+    box-shadow: inset 0 0 0 0 rgba(99, 102, 241, 0.35);
+  }
+}
+
+.animate-border-pulse {
+  animation: borderGrow 800ms ease-in-out 1;
+}
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Enhanced Dark Theme with Perfect Contrast Ratios */
+    --background: 0 0% 0%;
+    --background-subtle: 0 0% 1%;
+    --background-muted: 0 0% 2%;
+    --foreground: 0 0% 98%;
+    --foreground-muted: 0 0% 85%;
+    --foreground-subtle: 0 0% 70%;
+
+    --card: 0 0% 1.5%;
+    --card-foreground: 0 0% 98%;
+    --card-hover: 0 0% 2.5%;
+
+    --popover: 0 0% 2%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
+    --primary-hover: 0 0% 95%;
+    --primary-active: 0 0% 90%;
+
+    --secondary: 0 0% 4%;
+    --secondary-foreground: 0 0% 90%;
+    --secondary-hover: 0 0% 6%;
+
+    --muted: 0 0% 5%;
+    --muted-foreground: 0 0% 65%;
+    --muted-hover: 0 0% 7%;
+
+    --accent: 0 0% 8%;
+    --accent-foreground: 0 0% 95%;
+    --accent-hover: 0 0% 12%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 10%;
+    --border-subtle: 0 0% 8%;
+    --border-muted: 0 0% 6%;
+    --input: 0 0% 3%;
+    --ring: 0 0% 20%;
+
+    --radius: 0.875rem;
+    --radius-lg: 1rem;
+    --radius-xl: 1.25rem;
+    --radius-2xl: 1.5rem;
+
+    /* Chat Specific Semantic Colors */
+    --chat-bubble-user: 0 0% 6%;
+    --chat-bubble-assistant: 0 0% 2%;
+    --chat-input-bg: 0 0% 3%;
+    --chat-input-border: 0 0% 15%;
+    --code-background: 0 0% 3%;
+    --code-border: 0 0% 12%;
+
+    /* Enhanced Sidebar Colors */
+    --sidebar-background: 0 0% 1%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 0 0% 98%;
+    --sidebar-primary-foreground: 0 0% 2%;
+    --sidebar-accent: 0 0% 5%;
+    --sidebar-accent-foreground: 0 0% 95%;
+    --sidebar-border: 0 0% 8%;
+    --sidebar-ring: 0 0% 25%;
+    --sidebar-hover: 0 0% 4%;
+
+    /* Sophisticated Animation System */
+    --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+    --ease-out-cubic: cubic-bezier(0.33, 1, 0.68, 1);
+    --ease-in-out-cubic: cubic-bezier(0.65, 0, 0.35, 1);
+    --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    --ease-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+    --duration-fast: 150ms;
+    --duration-normal: 250ms;
+    --duration-slow: 350ms;
+    --duration-slower: 500ms;
+
+    /* Responsive Layout System */
+    --container-xs: 20rem;
+    --container-sm: 24rem;
+    --container-md: 28rem;
+    --container-lg: 32rem;
+    --container-xl: 36rem;
+    --container-2xl: 42rem;
+    --container-3xl: 48rem;
+    --container-4xl: 56rem;
+    --container-5xl: 64rem;
+    --container-6xl: 72rem;
+    --container-7xl: 80rem;
+
+    --sidebar-w-collapsed: 3.5rem;
+    --sidebar-w-expanded: 18rem;
+    --sidebar-w-mobile: 85vw;
+    --header-h: 3.5rem;
+    --header-h-mobile: 3rem;
+
+    /* Perfect Typography Scale */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+    --font-display: 'Cal Sans', 'Inter', sans-serif;
+
+    --text-2xs: 0.6875rem;
+    /* 11px */
+    --text-xs: 0.75rem;
+    /* 12px */
+    --text-sm: 0.8125rem;
+    /* 13px */
+    --text-base: 0.875rem;
+    /* 14px */
+    --text-md: 0.9375rem;
+    /* 15px */
+    --text-lg: 1rem;
+    /* 16px */
+    --text-xl: 1.125rem;
+    /* 18px */
+    --text-2xl: 1.25rem;
+    /* 20px */
+    --text-3xl: 1.5rem;
+    /* 24px */
+    --text-4xl: 1.875rem;
+    /* 30px */
+    --text-5xl: 2.25rem;
+    /* 36px */
+
+    --leading-tight: 1.25;
+    --leading-snug: 1.375;
+    --leading-normal: 1.5;
+    --leading-relaxed: 1.625;
+    --leading-loose: 2;
+
+    /* Micro Spacing System */
+    --space-px: 1px;
+    --space-0: 0;
+    --space-0_5: 0.125rem;
+    /* 2px */
+    --space-1: 0.25rem;
+    /* 4px */
+    --space-1_5: 0.375rem;
+    /* 6px */
+    --space-2: 0.5rem;
+    /* 8px */
+    --space-2_5: 0.625rem;
+    /* 10px */
+    --space-3: 0.75rem;
+    /* 12px */
+    --space-3_5: 0.875rem;
+    /* 14px */
+    --space-4: 1rem;
+    /* 16px */
+    --space-5: 1.25rem;
+    /* 20px */
+    --space-6: 1.5rem;
+    /* 24px */
+    --space-7: 1.75rem;
+    /* 28px */
+    --space-8: 2rem;
+    /* 32px */
+    --space-9: 2.25rem;
+    /* 36px */
+    --space-10: 2.5rem;
+    /* 40px */
+    --space-11: 2.75rem;
+    /* 44px */
+    --space-12: 3rem;
+    /* 48px */
+    --space-14: 3.5rem;
+    /* 56px */
+    --space-16: 4rem;
+    /* 64px */
+    --space-20: 5rem;
+    /* 80px */
+    --space-24: 6rem;
+    /* 96px */
+    --space-28: 7rem;
+    /* 112px */
+    --space-32: 8rem;
+    /* 128px */
+
+    /* Enhanced Shadow System */
+    --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+    --shadow-2xl: 0 25px 50px -12px rgb(0 0 0 / 0.25);
+    --shadow-inner: inset 0 2px 4px 0 rgb(0 0 0 / 0.05);
+
+    /* Blur System */
+    --blur-none: 0;
+    --blur-sm: 4px;
+    --blur-base: 8px;
+    --blur-md: 12px;
+    --blur-lg: 16px;
+    --blur-xl: 24px;
+    --blur-2xl: 40px;
+    --blur-3xl: 64px;
+
+    /* Z-Index Scale */
+    --z-hide: -1;
+    --z-auto: auto;
+    --z-base: 0;
+    --z-docked: 10;
+    --z-dropdown: 1000;
+    --z-sticky: 1100;
+    --z-banner: 1200;
+    --z-overlay: 1300;
+    --z-modal: 1400;
+    --z-popover: 1500;
+    --z-skipLink: 1600;
+    --z-toast: 1700;
+    --z-tooltip: 1800;
+    --z-max: 2147483647;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    font-variant-numeric: tabular-nums;
+    line-height: var(--leading-normal);
+  }
+
+  /* Enhanced Scrollbar Styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background-muted));
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+    transition: background var(--duration-normal) var(--ease-out-cubic);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--border) / 0.8);
+  }
+
+  /* Perfect Focus Ring System */
+  *:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: var(--radius);
+  }
+
+  /* Enhanced Selection Styling */
+  ::selection {
+    background: hsl(var(--primary) / 0.15);
+    color: hsl(var(--foreground));
+  }
+
+  /* Typography Enhancements */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-weight: 600;
+    line-height: var(--leading-tight);
+    letter-spacing: -0.025em;
+  }
+
+  p {
+    line-height: var(--leading-relaxed);
+  }
+
+  /* Code Styling */
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    font-weight: 500;
+  }
+
+  /* Enhanced Button Reset */
+  button {
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* Input Enhancements */
+  input,
+  textarea {
+    font-family: inherit;
+  }
+
+  input[type="search"]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+  }
+}
+
+@layer components {
+
+  /* Glass Morphism Utility */
+  .glass {
+    backdrop-filter: blur(var(--blur-lg));
+    -webkit-backdrop-filter: blur(var(--blur-lg));
+    background: hsl(var(--background) / 0.8);
+    border: 1px solid hsl(var(--border-subtle) / 0.5);
+  }
+
+  /* Modern Container System */
+  .container-fluid {
+    width: 100%;
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+
+  @media (min-width: 640px) {
+    .container-fluid {
+      padding-left: var(--space-6);
+      padding-right: var(--space-6);
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container-fluid {
+      padding-left: var(--space-8);
+      padding-right: var(--space-8);
+    }
+  }
+
+  /* Enhanced Animation Classes */
+  .animate-in {
+    animation-duration: var(--duration-normal);
+    animation-timing-function: var(--ease-out-expo);
+    animation-fill-mode: both;
+  }
+
+  .animate-out {
+    animation-duration: var(--duration-fast);
+    animation-timing-function: var(--ease-in-out-cubic);
+    animation-fill-mode: both;
+  }
+
+  /* Micro Interactions */
+  .interactive {
+    transition: all var(--duration-fast) var(--ease-out-cubic);
+    cursor: pointer;
+  }
+
+  .interactive:hover {
+    transform: translateY(-1px);
+  }
+
+  .interactive:active {
+    transform: translateY(0);
+    transition-duration: var(--duration-fast);
+  }
+
+  /* Perfect Text Truncation */
+  .truncate-1 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+  }
+
+  .truncate-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  .truncate-3 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+}
