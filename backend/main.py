@@ -1,228 +1,313 @@
-import torch
-import torch.nn as nn
-import tiktoken
-import time
-import uvicorn
-import logging
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+"""
+main.py — FastAPI application for the Noir Whisper backend.
+
+Endpoints
+---------
+GET  /health             Liveness + readiness probe.
+POST /generate           Full response at once (kept for compatibility).
+POST /generate/stream    Server-Sent Events — streams one token at a time.
+GET  /config             Exposes current model & server configuration.
+"""
+
+import asyncio
 import json
+import logging
+import sys
+import time
+from contextlib import asynccontextmanager
 
-torch.set_float32_matmul_precision('high')
-# --- 1. CONFIGURATION ---
-class Config:
-    VOCAB_SIZE = 50257
-    D_MODEL = 768
-    N_LAYERS = 12
-    N_HEADS = 12
-    D_FF = 3072
-    MAX_SEQ_LEN = 1024
-    DROPOUT = 0.0 # No dropout for inference
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, field_validator
 
-# --- 2. MODEL ARCHITECTURE ---
-class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model, n_heads, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.d_k = d_model // n_heads
-        self.qkv_proj = nn.Linear(d_model, 3 * d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
+from config import (
+    CHECKPOINT_PATH,
+    CORS_ORIGINS,
+    GenerationDefaults,
+    ModelConfig,
+    SERVER_HOST,
+    SERVER_PORT,
+)
+from inference import GenerationRequest, engine
 
-    def forward(self, x, mask=None):
-        batch_size, seq_len, d_model = x.shape
-        qkv = self.qkv_proj(x).reshape(batch_size, seq_len, 3, self.n_heads, self.d_k).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.d_k ** 0.5)
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
-        attn = self.dropout(torch.softmax(scores, dim=-1))
-        out = torch.matmul(attn, v).transpose(1, 2).contiguous().reshape(batch_size, seq_len, d_model)
-        return self.out_proj(out)
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
 
-class FeedForward(nn.Module):
-    def __init__(self, d_model, d_ff, dropout=0.1):
-        super().__init__()
-        self.linear1 = nn.Linear(d_model, d_ff)
-        self.linear2 = nn.Linear(d_ff, d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.activation = nn.GELU()
-    def forward(self, x):
-        return self.linear2(self.dropout(self.activation(self.linear1(x))))
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 
-class TransformerBlock(nn.Module):
-    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
-        super().__init__()
-        self.attn = MultiHeadAttention(d_model, n_heads, dropout)
-        self.ff = FeedForward(d_model, d_ff, dropout)
-        self.ln1 = nn.LayerNorm(d_model)
-        self.ln2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-    def forward(self, x, mask):
-        x = x + self.dropout(self.attn(self.ln1(x), mask))
-        x = x + self.dropout(self.ff(self.ln2(x)))
-        return x
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-class GPTModel(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.token_embed = nn.Embedding(config.VOCAB_SIZE, config.D_MODEL)
-        self.pos_embed = nn.Embedding(config.MAX_SEQ_LEN, config.D_MODEL)
-        self.blocks = nn.ModuleList([TransformerBlock(config.D_MODEL, config.N_HEADS, config.D_FF, config.DROPOUT) for _ in range(config.N_LAYERS)])
-        self.ln_final = nn.LayerNorm(config.D_MODEL)
-        self.head = nn.Linear(config.D_MODEL, config.VOCAB_SIZE, bias=False)
-        self.token_embed.weight = self.head.weight
+logger = logging.getLogger("noir_whisper.api")
 
-    def forward(self, x):
-        batch_size, seq_len = x.shape
-        positions = torch.arange(0, seq_len, device=x.device).unsqueeze(0)
-        x = self.token_embed(x) + self.pos_embed(positions)
-        mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).unsqueeze(0).unsqueeze(0)
-        for block in self.blocks: x = block(x, mask)
-        return self.head(self.ln_final(x))
 
-# --- 3. SERVER SETUP ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger("AI_Server")
+# ---------------------------------------------------------------------------
+# Lifespan — model loaded once on startup
+# ---------------------------------------------------------------------------
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("=" * 60)
+    logger.info("  Noir Whisper Backend — starting up")
+    logger.info("=" * 60)
 
-# Allow React Frontend
+    try:
+        engine.load_model()
+        logger.info("🟢  Model ready — server is accepting requests")
+    except RuntimeError as exc:
+        logger.critical("🔴  Failed to load model: %s", exc)
+        logger.critical("    The server will start but /generate will return 503.")
+    except Exception as exc:
+        logger.critical("🔴  Unexpected error during startup: %s", exc, exc_info=True)
+
+    yield
+
+    logger.info("Noir Whisper Backend — shutting down")
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+app = FastAPI(
+    title="Noir Whisper — RangeFlow LLM Backend",
+    description=(
+        "Local inference server for the Noir Whisper chat UI. "
+        "Powered by a RangeFlow-constrained GPT-124M model."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8081"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Load Model (Global)
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHECKPOINT_PATH = "model/checkpoint_step_7100.pt"
 
-print(f"🔌 Loading model on {DEVICE}...")
-model = GPTModel(Config).to(DEVICE)
-try:
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    print("✅ Model Loaded Successfully!")
-except Exception as e:
-    print(f"❌ Error loading model: {e}")
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 
-tokenizer = tiktoken.get_encoding("gpt2")
+class GenerateRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=4096)
 
-# Stop sequences to prevent repetition and over-generation
-STOP_SEQUENCES = ["\nUser:", "\n\nUser:", "User:", "\nAI:", "\n\nAI:"]
-# Encode stop sequences for efficient checking
-STOP_TOKEN_SEQUENCES = []
-for stop_seq in STOP_SEQUENCES:
-    try:
-        encoded = tokenizer.encode(stop_seq)
-        if encoded:
-            STOP_TOKEN_SEQUENCES.append(encoded)
-    except:
-        pass
+    max_tokens:         int   = Field(default=GenerationDefaults.MAX_TOKENS,          ge=1,    le=ModelConfig.MAX_SEQ_LEN)
+    temperature:        float = Field(default=GenerationDefaults.TEMPERATURE,         ge=0.01, le=5.0)
+    top_p:              float = Field(default=GenerationDefaults.TOP_P,               ge=0.0,  le=1.0)
+    top_k:              int   = Field(default=GenerationDefaults.TOP_K,               ge=1,    le=200)
+    repetition_penalty: float = Field(default=GenerationDefaults.REPETITION_PENALTY,  ge=1.0,  le=3.0)
+    range_epsilon:      float = Field(default=GenerationDefaults.RANGE_EPSILON,       ge=0.0,  le=2.0)
 
-class PromptRequest(BaseModel):
-    prompt: str
-    max_tokens: int = 100
-    temperature: float = 0.7
+    @field_validator("prompt")
+    @classmethod
+    def strip_prompt(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("prompt must not be empty")
+        return v
 
-def stream_generator(prompt, max_new_tokens, temperature):
-    """Generates tokens one by one for streaming"""
-    
-    # Metrics Tracking
-    start_time = time.time()
-    first_token_time = 0
-    token_count = 0
-    
-    tokens = torch.tensor(tokenizer.encode(prompt), dtype=torch.long, device=DEVICE).unsqueeze(0)
-    generated_text = ""
-    
-    with torch.no_grad():
-        for i in range(max_new_tokens):
-            if tokens.size(1) >= Config.MAX_SEQ_LEN: break
-            
-            # Forward pass
-            logits = model(tokens)[:, -1, :] / temperature
-            
-            # Sampling (Nucleus + TopK for speed/quality)
-            v, _ = torch.topk(logits, min(50, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = -float('Inf')
-            probs = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            
-            # Decode token
-            word = tokenizer.decode([next_token.item()])
-            generated_text += word
-            
-            # Check for stop sequences and repetition patterns
-            should_stop = False
-            
-            if next_token.item() == tokenizer.eot_token:
-                should_stop = True
-            else:
-                # Check if any stop sequence appears at the end of generated text
-                for stop_seq in STOP_SEQUENCES:
-                    if generated_text.endswith(stop_seq):
-                        should_stop = True
-                        # Remove the stop sequence from the word we yield
-                        if word.endswith(stop_seq):
-                            word = word[:-len(stop_seq)]
-                        break
-                    # Also check if stop sequence is in the recent text (last 50 chars)
-                    elif len(generated_text) > 50 and stop_seq in generated_text[-50:]:
-                        # Check if it's near the end (within last 20 chars)
-                        idx = generated_text.rfind(stop_seq)
-                        if idx >= len(generated_text) - 20:
-                            should_stop = True
-                            break
-                
-                # Check for repetition patterns (if same phrase repeats 2+ times consecutively)
-                if not should_stop and len(generated_text) > 50:
-                    words = generated_text.split()
-                    if len(words) > 15:
-                        # Check for repeating phrases in the last portion
-                        for window_size in [3, 5, 7]:
-                            if len(words) >= window_size * 2:
-                                recent_words = words[-window_size * 2:]
-                                first_phrase = " ".join(recent_words[:window_size])
-                                second_phrase = " ".join(recent_words[window_size:])
-                                # Only stop if exact repetition (case-insensitive)
-                                if first_phrase.lower() == second_phrase.lower() and len(first_phrase) > 10:
-                                    should_stop = True
-                                    break
-                            if should_stop:
-                                break
-            
-            # Update metrics
-            if token_count == 0:
-                first_token_time = time.time() - start_time
-            token_count += 1
-            
-            # Yield word to client (stop sequence removed if found)
-            yield word
-            
-            if should_stop:
-                break
-            
-            tokens = torch.cat([tokens, next_token], dim=1)
-                
-    # Final Metrics Log
-    total_time = time.time() - start_time
-    tps = token_count / total_time
-    logger.info(f"⚡ Request Complete | TTFT: {first_token_time*1000:.2f}ms | Speed: {tps:.2f} T/s | Total: {token_count} tokens")
 
-@app.post("/generate")
-async def generate_stream(request: PromptRequest):
-    return StreamingResponse(
-        stream_generator(request.prompt, request.max_tokens, request.temperature), 
-        media_type="text/event-stream"
+class GenerateResponse(BaseModel):
+    response:         str
+    tokens_generated: int
+    elapsed_ms:       float
+    device:           str
+
+
+class HealthResponse(BaseModel):
+    status:       str
+    model_loaded: bool
+    device:       str
+    checkpoint:   str
+    uptime_s:     float
+
+
+# ---------------------------------------------------------------------------
+# Middleware — request timing
+# ---------------------------------------------------------------------------
+
+_server_start = time.time()
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    t0   = time.perf_counter()
+    resp = await call_next(request)
+    elapsed = (time.perf_counter() - t0) * 1000
+    logger.info("%-6s %-30s → %d  (%.1f ms)",
+                request.method, request.url.path, resp.status_code, elapsed)
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Error handler
+# ---------------------------------------------------------------------------
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception on %s %s: %s",
+                 request.method, request.url.path, exc, exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error — check backend logs."},
     )
 
+
+# ---------------------------------------------------------------------------
+# Routes — meta
+# ---------------------------------------------------------------------------
+
+@app.get("/health", response_model=HealthResponse, tags=["meta"])
+async def health():
+    ready = engine.is_ready
+    body  = HealthResponse(
+        status       = "ok" if ready else "degraded",
+        model_loaded = ready,
+        device       = engine.device,
+        checkpoint   = CHECKPOINT_PATH,
+        uptime_s     = round(time.time() - _server_start, 1),
+    )
+    return JSONResponse(status_code=200 if ready else 503, content=body.model_dump())
+
+
+@app.get("/config", tags=["meta"])
+async def get_config():
+    return {
+        "model": {
+            "vocab_size":  ModelConfig.VOCAB_SIZE,
+            "d_model":     ModelConfig.D_MODEL,
+            "n_layers":    ModelConfig.N_LAYERS,
+            "n_heads":     ModelConfig.N_HEADS,
+            "d_ff":        ModelConfig.D_FF,
+            "max_seq_len": ModelConfig.MAX_SEQ_LEN,
+        },
+        "defaults": {
+            "max_tokens":         GenerationDefaults.MAX_TOKENS,
+            "temperature":        GenerationDefaults.TEMPERATURE,
+            "top_p":              GenerationDefaults.TOP_P,
+            "top_k":              GenerationDefaults.TOP_K,
+            "repetition_penalty": GenerationDefaults.REPETITION_PENALTY,
+            "range_epsilon":      GenerationDefaults.RANGE_EPSILON,
+        },
+        "checkpoint": CHECKPOINT_PATH,
+        "device":     engine.device,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes — inference
+# ---------------------------------------------------------------------------
+
+def _make_req(body: GenerateRequest) -> GenerationRequest:
+    return GenerationRequest(
+        prompt             = body.prompt,
+        max_tokens         = body.max_tokens,
+        temperature        = body.temperature,
+        top_p              = body.top_p,
+        top_k              = body.top_k,
+        repetition_penalty = body.repetition_penalty,
+        range_epsilon      = body.range_epsilon,
+    )
+
+
+@app.post("/generate", response_model=GenerateResponse, tags=["inference"])
+async def generate(body: GenerateRequest):
+    """Non-streaming — waits for full generation then returns the whole response."""
+    if not engine.is_ready:
+        raise HTTPException(status_code=503, detail="Model is not loaded yet.")
+
+    try:
+        result = engine.generate(_make_req(body))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        logger.error("Generation error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Unexpected generation error.")
+
+    return GenerateResponse(**result)
+
+
+@app.post("/generate/stream", tags=["inference"])
+async def generate_stream(body: GenerateRequest):
+    """
+    Streaming generation via Server-Sent Events (SSE).
+
+    Tokens are emitted one by one as JSON:
+        data: {"token": " hello"}\\n\\n
+        data: {"token": " world"}\\n\\n
+        data: {"done": true, "tokens_generated": 42}\\n\\n
+
+    On error:
+        data: {"error": "something went wrong"}\\n\\n
+    """
+    if not engine.is_ready:
+        raise HTTPException(status_code=503, detail="Model is not loaded yet.")
+
+    req  = _make_req(body)
+    loop = asyncio.get_event_loop()
+
+    # asyncio.Queue bridges the background thread → async generator
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def run_in_thread():
+        """Runs the blocking generation loop in a ThreadPoolExecutor."""
+        try:
+            engine.generate_stream(req, queue, loop)
+        except Exception as exc:
+            logger.error("Streaming thread error: %s", exc, exc_info=True)
+            loop.call_soon_threadsafe(queue.put_nowait, ("error", str(exc)))
+
+    async def event_stream():
+        # Kick generation off in a background thread so the event loop stays free
+        loop.run_in_executor(None, run_in_thread)
+
+        while True:
+            kind, payload = await queue.get()
+
+            if kind == "token":
+                yield f"data: {json.dumps({'token': payload})}\n\n"
+
+            elif kind == "done":
+                yield f"data: {json.dumps({'done': True, 'tokens_generated': payload})}\n\n"
+                break
+
+            elif kind == "error":
+                yield f"data: {json.dumps({'error': payload})}\n\n"
+                break
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":     "no-cache",
+            "X-Accel-Buffering": "no",  # prevent Nginx from buffering the stream
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("Starting Uvicorn on %s:%d", SERVER_HOST, SERVER_PORT)
+    uvicorn.run(
+        "main:app",
+        host=SERVER_HOST,
+        port=SERVER_PORT,
+        reload=False,
+        log_level="warning",
+        workers=1,
+    )
